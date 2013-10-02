@@ -1,5 +1,6 @@
 *.class
 *.log
+conf/application.conf
 
 # sbt specific
 dist/*
