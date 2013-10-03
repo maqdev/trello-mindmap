@@ -1,6 +1,7 @@
 import com.typesafe.config.ConfigFactory
 import java.io.{FileInputStream, File}
 import play.api.http.Status
+import play.api.libs.json.JsObject
 import play.api.libs.json.{JsValue, JsObject}
 import play.api.libs.ws.WS
 import scala.xml._
@@ -15,12 +16,12 @@ import scala.xml.transform.{RuleTransformer, RewriteRule}
 object TrelloMindmapSync{
 
   lazy val config = ConfigFactory.load
-  lazy val trelloAppKey = config.getString("trelloappKey")
+  lazy val trelloAppKey = config.getString("trello.appKey")
   lazy val trelloUserToken = config.getString("trello.userToken")
   lazy val targetFileName = "tasks.opml"
   lazy val tagetFileNameEncoding = "UTF-8"
 
-  val boardUrl = "fODfytyp"
+  lazy val boardUrls = config.getString("trello.boards").split(',')
 
   object logger {
     def info(message: String) = println(message)
@@ -53,9 +54,10 @@ object TrelloMindmapSync{
       </body>
     </opml>
 
-  case class Task(id:String, idBoard:String, name: String, shortUrl: String)
+  object TaskState extends Enumeration { val New, Existing, Removed = Value }
+  case class Task(id:String, idBoard:String, name: String, shortUrl: String, state: TaskState.Value)
 
-	def main(args: Array[String]) {
+  def main(args: Array[String]) {
 
     val targetFile = new File(targetFileName);
     val original =
@@ -64,68 +66,88 @@ object TrelloMindmapSync{
       else
         emptyXml
 
-    val futureBoardTasks = fetch("board/"+boardUrl+"/cards") map {
-      case response =>
-        response.as[List[JsObject]] map { case j: JsObject =>
-          val shortUrl = (j \ "shortUrl").as[String]
-          val task =
+    val tasks = scala.collection.mutable.Map[String,Task]()
+
+    val fetchBoards = boardUrls.map { boardUrl =>
+      fetch("board/"+boardUrl+"/cards") map {
+        case response =>
+          response.as[List[JsObject]] map { case j: JsObject =>
             Task(
               (j \ "id").as[String],
               (j \ "idBoard").as[String],
               (j \ "name").as[String],
-              shortUrl
+              (j \ "shortUrl").as[String],
+              TaskState.New
             )
-          (shortUrl, task)
-        } toMap
+          }
+      }
     }
 
-    futureBoardTasks.map { tasks =>
+    fetchBoards.map { boardFuture =>
+      boardFuture map { boardTasks =>
 
-      val newTasks = scala.collection.mutable.Map[String,Task](tasks.toSeq: _*)
-      val existingTasks = scala.collection.mutable.Map[String,Task]()
-      val deletedTasks = scala.collection.mutable.Set[String]()
+        tasks ++= boardTasks map { t => (t.shortUrl, t)}
 
-      for (
-        outline <- (original \\ "outline");
-        link = ((outline \ "@link").text);
+        for (
+          outline <- (original \\ "outline");
+          link = ((outline \ "@link").text);
+          id = ((outline \ "@id").text);
+          text = ((outline \ "@text").text);
 
-        // task
-        if (link.startsWith("URL: https://trello.com/c/"));
-        task = tasks.get(link)
-      ) {
-        if (task.isDefined)
-          existingTasks += link -> task.get
-        else
-          deletedTasks += link
-        newTasks.remove(link)
-      }
-
-      val newTasksMap = newTasks.toMap
-      println(newTasksMap.size)
-
-      object AddNewTasks extends RewriteRule {
-        override def transform(n: Node): Seq[Node] = n match {
-          case e: Elem =>
-            if (e.label == "outline" && (e \\ "@text").text == "[Inbox]" && (e \\ "@url").text.isEmpty) {
-              val newTasksOutline = newTasks.values.map { task =>
-                <outline id={task.id} text={task.name} type="link" url={"URL: "+task.shortUrl}>
-                </outline>
-              }
-              e.copy(child = e.child ++ newTasksOutline)
-            }
-            else
-              e
-          case _ => n
+          // task
+          if (link.startsWith("URL: https://trello.com/c/"));
+          task = tasks.get(link)
+        ) {
+          if (task.isDefined)
+            tasks(link) = task.get.copy(state = TaskState.Existing)
+          else
+            tasks(link) = Task(id, "", text, link, TaskState.Removed)
         }
       }
-
-      val rule = new RuleTransformer(AddNewTasks)
-      val newXml = rule.apply(original)
-      println(newXml)
     }
 
+    fetchBoards map { boardFuture => Await.result(boardFuture, 60 seconds) } // todo: find better solution
+
+    object AddNewTasks extends RewriteRule {
+      override def transform(n: Node): Seq[Node] = n match {
+        case e: Elem =>
+          if (e.label == "outline" && (e \ "@text").text == "[Inbox]" && (e \ "@url").text.isEmpty) {
+
+            val newTasks = tasks.values.filter(t => t.state == TaskState.New)
+
+            val newTasksOutline = newTasks.map { task =>
+              <outline id={task.id} text={task.name} type="link" url={"URL: "+task.shortUrl}>
+              </outline>
+            }
+            (e.copy(child = e.child ++ newTasksOutline) % Attribute(null, "alt", "An image of a hamster", Null))
+
+          } else
+          if (e.label == "outline" && (e \ "@url").text.startsWith("URL: https://trello.com/c/")) {
+
+            val shortUrl = (e \ "@url").text.substring("URL: ".length)
+            val t = tasks.get(shortUrl).get
+            val updatedElement =
+              t.state match {
+                case TaskState.Existing => e % Attribute(null, "alt", "An image of a hamster", Null)
+                case TaskState.Removed => e % Attribute(null, "alt", "An image of a hamster", Null)
+              }
+            updatedElement
+          }
+        else
+          e
+      case _ => n
+    }
+  }
+
+  println("Total tasks: " + tasks.size)
+
+  val rule = new RuleTransformer(AddNewTasks)
+  val newXml = rule.apply(original)
+  println(newXml)
+
+
     //Thread.sleep(10000)
-    Await.result(futureBoardTasks, 60 seconds)
+    // fetchBoards map { boardFuture => Await.result(boardFuture, 60 seconds) }
 
     //println("Halting...")
     //Runtime.getRuntime.halt(-1)
