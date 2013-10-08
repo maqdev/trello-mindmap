@@ -70,7 +70,7 @@ object TrelloMindmapSync {
                   (j \ "idBoard").as[String],
                   (j \ "name").as[String],
                   (j \ "shortUrl").as[String],
-                  (j \ "dateLastActivity").as[DateTime],
+                  DateTime.parse((j \ "dateLastActivity").as[String]),
                   TaskState.New
                 )
             }
@@ -128,7 +128,7 @@ object TrelloMindmapSync {
       topic <- (original \\ "topic");
       url = cleanUrl(((topic \ "@href").text));
       id = ((topic \ "@id").text);
-      date = DateTime.parse(((topic \ "@timestamp").text));
+      date = new DateTime(((topic \ "@timestamp").text).toLong);
       text = ((topic \ "title").text);
 
       // task
@@ -145,19 +145,55 @@ object TrelloMindmapSync {
     val newTasks = tasks.values.filter(t => t.state == TaskState.New)
 
     object AddNewTasks extends RewriteRule {
+
+      def appendChildren(path: Seq[String], siblings: Seq[Node], appendNodes: Iterable[Elem]): Seq[Node] = {
+        var found = false
+        val seq =
+          for (c <- siblings) yield
+          if (c.isInstanceOf[Elem] && c.label == path.head)
+          {
+            found = true
+            val e = c.asInstanceOf[Elem]
+            if (path.tail.isEmpty)
+              e.copy(child = child ++ appendNodes)
+            else
+              e.copy(child = appendChildren(path.tail, e.child, appendNodes))sss!
+          }
+          else
+            c
+        if (!copied) {
+          seq ++ <children>{newTasks}</children>
+        }
+        else
+          seq
+      }
+
+      def appendChildren(child: Seq[Node], newTasks: Iterable[Elem]): Seq[Node] = {
+
+      }
+
+      /*val children = (e \ "children");
+
+      val newChildren = if (children.isEmpty)
+        <children>{newTasksOutline}</children>
+      else
+        children.asInstanceOf[Elem].copy(child = children.asInstanceOf[Elem].child ++ newTasksOutline)*/
+
+
       override def transform(n: Node): Seq[Node] = n match {
         case e: Elem =>
-          if (e.label == "outline") {
-            val text = (e \ "@text").text
-            val url = cleanUrl((e \ "@url").text)
-            if (text == "[Inbox]" && url.isEmpty) {
+          if (e.label == "topic") {
+            val title = (e \ "title").text
+            val url = cleanUrl((e \ "@xlink:href").text)
+            if (title == "[Inbox]" && url.isEmpty) {
               val newTasksOutline = newTasks.map {
                 task =>
-                  <topic id="trello-{task.id}" timestamp=task.date. xlink:href={task.shortUrl}>
+                  <topic id="trello-{task.id}" timestamp={task.date.toInstant.toString} xlink:href={task.shortUrl}>
                     <title>{task.name}</title>
                   </topic>
               }
-              e.copy(child = e.child ++ newTasksOutline)
+
+              e.copy(child = appendChildren(e.child, newTasksOutline))
             } /*else
             if (url.startsWith("https://trello.com/c/")) {
 
@@ -191,12 +227,9 @@ object TrelloMindmapSync {
       logger.info("Removed task: " + task.shortUrl + " " + task.name)
     }
 
-    for (writer <- managed(new OutputStreamWriter(out))) {
-      XML.write(writer, newXml, "UTF-8", false, null)
-    }
-
-    //XML.save(out, newXml)
-    newXml
+    val writer = new OutputStreamWriter(out)
+    XML.write(writer, newXml, "UTF-8", false, null)
+    writer.flush()
   }
 
   def prependDeleted(s: String) = if (s.startsWith("[DELETED!]: ")) s else "[DELETED!]: " + s
