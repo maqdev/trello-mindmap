@@ -2,6 +2,7 @@ import com.typesafe.config.ConfigFactory
 import java.io._
 import java.util.zip._
 import org.apache.commons.io.IOUtils
+import org.joda.time.DateTime
 import play.api.http.Status
 import play.api.libs.json.JsObject
 import play.api.libs.json.{JsValue, JsObject}
@@ -52,7 +53,7 @@ object TrelloMindmapSync {
     val New, Existing, Removed = Value
   }
 
-  case class Task(id: String, idBoard: String, name: String, shortUrl: String, state: TaskState.Value)
+  case class Task(id: String, idBoard: String, name: String, shortUrl: String, date: DateTime, state: TaskState.Value)
 
   def main(args: Array[String]) {
 
@@ -69,6 +70,7 @@ object TrelloMindmapSync {
                   (j \ "idBoard").as[String],
                   (j \ "name").as[String],
                   (j \ "shortUrl").as[String],
+                  (j \ "dateLastActivity").as[DateTime],
                   TaskState.New
                 )
             }
@@ -126,6 +128,7 @@ object TrelloMindmapSync {
       topic <- (original \\ "topic");
       url = cleanUrl(((topic \ "@href").text));
       id = ((topic \ "@id").text);
+      date = DateTime.parse(((topic \ "@timestamp").text));
       text = ((topic \ "title").text);
 
       // task
@@ -136,7 +139,7 @@ object TrelloMindmapSync {
       if (task.isDefined)
         tasks(url) = task.get.copy(state = TaskState.Existing)
       else
-        tasks(url) = Task(id, "", text, url, TaskState.Removed)
+        tasks(url) = Task(id, "", text, url, date, TaskState.Removed)
     }
 
     val newTasks = tasks.values.filter(t => t.state == TaskState.New)
@@ -150,11 +153,12 @@ object TrelloMindmapSync {
             if (text == "[Inbox]" && url.isEmpty) {
               val newTasksOutline = newTasks.map {
                 task =>
-                  <outline id={task.id} text={task.name} type="link" url={"URL: " + task.shortUrl}>
-                  </outline>
+                  <topic id="trello-{task.id}" timestamp=task.date. xlink:href={task.shortUrl}>
+                    <title>{task.name}</title>
+                  </topic>
               }
               e.copy(child = e.child ++ newTasksOutline)
-            } else
+            } /*else
             if (url.startsWith("https://trello.com/c/")) {
 
               tasks.get(url) match {
@@ -166,7 +170,7 @@ object TrelloMindmapSync {
 
                 case _ => e
               }
-            }
+            }*/
             else
               e
           }
