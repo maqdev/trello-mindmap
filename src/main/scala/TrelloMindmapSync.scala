@@ -58,7 +58,7 @@ object TrelloMindmapSync {
     val inputFile = new File(inputFileName)
     for (
       inputFileZip <- managed(new ZipFile(inputFile));
-      outputFileZip <- managed(new ZipOutputStream(new FileOutputStream(outputFileName)))) {
+      outputFileZip <- managed(new ZipOutputStream(new FileOutputStream(outputFileName + ".tmp")))) {
 
       import collection.JavaConverters._
       val entries = inputFileZip.entries.asScala
@@ -73,6 +73,15 @@ object TrelloMindmapSync {
           outputFileZip.closeEntry()
       }
     }
+
+    // overwrite
+    val outputFile = new File(outputFileName)
+    if (outputFile.exists()) {
+      outputFile.delete
+    }
+
+    val tempOutputFile = new File(outputFileName + ".tmp")
+    tempOutputFile.renameTo(outputFile)
   }
 
   def main(args: Array[String]) {
@@ -161,11 +170,16 @@ object TrelloMindmapSync {
 
   def topicToTask(topic: Node, tasks: Map[String, Task]) = {
     val url = cleanUrl(getAttributeText(topic, "href"))
-    val id = ((topic \ "@id").text)
-    val text = ((topic \ "title").text)
-    val date = new DateTime(((topic \ "@timestamp").text).toLong)
-
     if (url.startsWith("https://trello.com/c/")) {
+      val id = ((topic \ "@id").text)
+      val text = ((topic \ "title").text)
+      val date = try {
+        new DateTime(((topic \ "@timestamp").text).toLong)
+      }
+      catch {
+        case _: Throwable => new DateTime()
+      }
+
       val task = tasks.get(url)
       if (task.isDefined)
         Some(task.get.copy(state = TaskState.Existing))
