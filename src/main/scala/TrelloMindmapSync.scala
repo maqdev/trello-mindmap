@@ -9,8 +9,7 @@ import play.api.libs.ws.WS
 import scala.Some
 import scala.xml._
 import play.api.libs.concurrent.Execution.Implicits._
-import scala.concurrent.{Future, Await}
-import scala.concurrent.duration._
+import scala.concurrent.Future
 import scala.xml.transform.{RuleTransformer, RewriteRule}
 import resource._
 
@@ -139,11 +138,22 @@ object TrelloMindmapSync {
               case listResults =>
 
                 val lists = listResults.flatten.toMap
-                processMindMap(tasks, boards, lists)
+                try {
+                  processMindMap(tasks, boards, lists)
+                }
+                catch {
+                  case x => println(x)
+                }
                 println("Shutting down")
                 System.exit(0)
             }
         }
+    }
+
+    flists.onFailure {
+      case x =>
+        println(x)
+        Runtime.getRuntime.halt(-1)
     }
 
     fcards.onFailure {
@@ -210,11 +220,11 @@ object TrelloMindmapSync {
     println("Total tasks: " + tasks.size)
     println("New tasks: " + newTasks.size)
 
-    val groupedNewTasks = { newTasks groupBy(_.idList) groupBy (_._2.map(_.idBoard)) } map { a => (a._1.head -> a._2) }
+    val groupedNewTasks = {
+      newTasks groupBy (_.idList) groupBy (_._2.map(_.idBoard).head)
+    } // map { a => (a._1 -> a._2) }
 
-    println(groupedNewTasks)
-
-    object AddNewTasks extends RewriteRule {
+    object scope {
 
       def attributesMatch(a: Elem, b: Elem): Boolean =
         a.attributes.foldLeft(true)((r, i) => {
@@ -267,77 +277,6 @@ object TrelloMindmapSync {
           seq
       }
 
-      override def transform(n: Node): Seq[Node] = n match {
-        case e: Elem =>
-          if (e.label == "xmap-content") {
-
-            /*val newTasksOutline = newTasks.map {
-              task =>
-                <topic id={"trello-" + task.id} timestamp={task.date.toInstant.getMillis.toString} xlink:href={task.shortUrl}>
-                  <title>
-                    {task.name}
-                  </title>
-                </topic>
-            }*/
-
-            val newTasksOutline = groupedNewTasks.map { b =>
-              <topic>
-                <title>{b._1}</title> // board name
-                <children>
-                <topics type="attached">
-                  {
-                    b._2 map { l =>
-                      <topic> //
-                        <title>{lists(l._1)}</title> // list name
-                        <children>
-                        <topics type="attached">
-                          {
-                            l._2 map { task =>
-                              <topic id={"trello-" + task.id} timestamp={task.date.toInstant.getMillis.toString} xlink:href={task.shortUrl}>
-                                <title>
-                                  {task.name}
-                                </title>
-                              </topic>
-                            }
-                          }
-                        </topics>
-                        </children>
-                      </topic>
-                    }
-                  }
-                </topics>
-                </children>
-              </topic>
-              /*
-
-              task =>
-                <topic id={"trello-" + task.id} timestamp={task.date.toInstant.getMillis.toString} xlink:href={task.shortUrl}>
-                  <title>
-                    {task.name}
-                  </title>
-                </topic> */
-            }
-
-            val path = List(
-                <sheet/>,
-                <topic/>,
-                <children/>,
-                <topics type="attached"/>,
-              <topic>
-                <title>[Inbox]</title>
-              </topic>,
-                <children/>,
-                <topics type="attached"/>
-            )
-            e.copy(child = appendChildren(path, e.child, newTasksOutline))
-          }
-          else e
-        case _ => n
-      }
-    }
-
-    object UpdateExistingTasks extends RewriteRule {
-
       def modifyLabels(nodes: Seq[Node], t: Task): Seq[Node] = {
 
         def removeTrello(nodes: Seq[Node]): Seq[Node] = nodes.filter {
@@ -345,16 +284,14 @@ object TrelloMindmapSync {
         }
 
         val labels: Seq[Node] = List(
-          boards.get(t.idBoard).toSeq.map {
-            b => <label>trello-board-
-              {b}
-            </label>
-          },
+          boards.get(t.idBoard).toSeq.map(b => <label>
+            {"trello-board-" + b}
+          </label>),
           if (t.state == TaskState.Removed)
             <label>trello-removed</label>
           else
             NodeSeq.Empty
-        ).flatten
+        ).flatten.map(xml.Utility.trim(_))
 
         var added = false
         val r = nodes.map {
@@ -382,7 +319,7 @@ object TrelloMindmapSync {
         }
 
         val markers = if (t.state == TaskState.Removed)
-            <marker-ref marker-id="symbol-wrong"/>
+            <marker-ref marker-id="symbol-wrong"/>.map(xml.Utility.trim(_))
         else
           NodeSeq.Empty
 
@@ -398,9 +335,10 @@ object TrelloMindmapSync {
         }.flatten
 
         if (!added)
-          r ++ <marker-refs>
-            {markers}
-          </marker-refs>
+          r ++
+            <marker-refs>
+              {markers}
+            </marker-refs>
         else
           r
       }
@@ -423,17 +361,85 @@ object TrelloMindmapSync {
           nodes
       }
 
+      def modifyTaskChildren(nodes: Seq[Node], task: Task): Seq[Node] = modifyMarkers(nodes, task) //modifyTitle(nodes, task)//modifyMarkers(nodes/*modifyLabels(nodes, task)*/, task), task)
+    }
+
+    object AddNewTasks extends RewriteRule {
+
+      override def transform(n: Node): Seq[Node] = n match {
+        case e: Elem =>
+          if (e.label == "xmap-content") {
+            val newTasksOutline = groupedNewTasks.map {
+              b =>
+                <topic>
+                <title>
+                  {boards(b._1)}
+                </title>
+                // board name
+                <children>
+                  <topics type="attached">
+                    {b._2 map {
+                    l =>
+                      <topic>//
+                        <title>
+                          {lists(l._1)}
+                        </title>
+                        // list name
+                        <children>
+                          <topics type="attached">
+                            {l._2 map {
+                            task =>
+                              val t = <topic id={"trello-" + task.id} timestamp={task.date.toInstant.getMillis.toString} xlink:href={task.shortUrl}>
+                                <title>
+                                  {task.name}
+                                </title>
+                              </topic>
+                              xml.Utility.trim(t.copy(child = scope.modifyTaskChildren(t.child, task)))
+                          }}
+                          </topics>
+                        </children>
+                      </topic>
+                  }}
+                  </topics>
+                </children>
+              </topic>
+            }
+
+            val path = List(
+                <sheet/>,
+                <topic/>,
+                <children/>,
+                <topics type="attached"/>,
+              <topic>
+                <title>[Inbox]</title>
+              </topic>,
+                <children/>,
+                <topics type="attached"/>,
+              <topic>
+                <title>
+                  {DateTime.now.toDateTimeISO}
+                </title>
+              </topic>,
+                <children/>,
+                <topics type="attached"/>
+            )
+            e.copy(child = scope.appendChildren(path, e.child, newTasksOutline))
+          }
+          else e
+        case _ => n
+      }
+    }
+
+    object UpdateExistingTasks extends RewriteRule {
+
       override def transform(n: Node): Seq[Node] = n match {
         case e: Elem =>
           if (e.label == "topic") {
             val et = topicToTask(e, tasks)
             if (et.isDefined) {
-              val t = tasks.get(et.get.shortUrl)
+              val t = tasks(et.get.shortUrl)
 
-              e.copy(
-                //label = modifyLabel(e.label, t.get),
-                child = modifyTitle(modifyMarkers(modifyLabels(e.child, t.get), t.get), t.get)
-              )
+              e.copy(child = scope.modifyTaskChildren(e.child, t))
             }
             else
               e
@@ -444,20 +450,24 @@ object TrelloMindmapSync {
       }
     }
 
-    val rule = new RuleTransformer(UpdateExistingTasks, AddNewTasks)
-    val newXml = rule.apply(original)
+    try {
+      val rule = new RuleTransformer(UpdateExistingTasks, AddNewTasks)
+      val newXml = rule.apply(original)
 
-    for (task <- newTasks) {
-      logger.info("New task: " + boards(task.idBoard) + " / " + lists(task.idList) + " / " + task.shortUrl + " " + task.name)
+      for (task <- newTasks) {
+        logger.info("New task: " + boards(task.idBoard) + " / " + lists(task.idList) + " / " + task.shortUrl + " " + task.name)
+      }
+
+      for (task <- tasks.values.filter(t => t.state == TaskState.Removed)) {
+        logger.info("Removed task: " + task.shortUrl + " " + task.name)
+      }
+
+      val writer = new OutputStreamWriter(out)
+      XML.write(writer, newXml, "UTF-8", false, null)
+      writer.flush()
+    } catch {
+      case x: Throwable => println(x)
     }
-
-    for (task <- tasks.values.filter(t => t.state == TaskState.Removed)) {
-      logger.info("Removed task: " + task.shortUrl + " " + task.name)
-    }
-
-    val writer = new OutputStreamWriter(out)
-    XML.write(writer, newXml, "UTF-8", false, null)
-    writer.flush()
   }
 
   def cleanUrl(s: String) = if (s.startsWith("URL:")) s.substring(4).trim() else s
