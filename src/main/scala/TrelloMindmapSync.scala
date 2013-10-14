@@ -361,14 +361,14 @@ object TrelloMindmapSync {
           nodes
       }
 
-      def modifyTaskChildren(nodes: Seq[Node], task: Task): Seq[Node] = modifyMarkers(nodes, task) //modifyTitle(nodes, task)//modifyMarkers(nodes/*modifyLabels(nodes, task)*/, task), task)
+      def modifyTaskChildren(nodes: Seq[Node], task: Task): Seq[Node] = modifyTitle(nodes/*modifyMarkers(nodes/*modifyLabels(nodes, task)*/, task)*/, task)
     }
 
     object AddNewTasks extends RewriteRule {
 
       override def transform(n: Node): Seq[Node] = n match {
         case e: Elem =>
-          if (e.label == "xmap-content") {
+          if (e.label == "xmap-content" && !newTasks.isEmpty) {
             val newTasksOutline = groupedNewTasks.map {
               b =>
                 <topic>
@@ -430,6 +430,13 @@ object TrelloMindmapSync {
       }
     }
 
+    class RewriteTitle(task: Task) extends RewriteRule {
+      override def transform(n: Node): Seq[Node] = n match {
+        case e @ <title>{name}</title> => <title>{task.name + " / " + lists.get(task.idList).map{a=>a}}</title>
+        case _ => n
+      }
+    }
+
     object UpdateExistingTasks extends RewriteRule {
 
       override def transform(n: Node): Seq[Node] = n match {
@@ -439,7 +446,10 @@ object TrelloMindmapSync {
             if (et.isDefined) {
               val t = tasks(et.get.shortUrl)
 
-              e.copy(child = scope.modifyTaskChildren(e.child, t))
+              println("copying: " + e.toString)
+              val r = new RuleTransformer(new RewriteTitle(t))
+              //e.copy(child = scope.modifyTaskChildren(e.child, t))
+              e.copy(child = r.apply(e.child))
             }
             else
               e
@@ -450,24 +460,20 @@ object TrelloMindmapSync {
       }
     }
 
-    try {
-      val rule = new RuleTransformer(UpdateExistingTasks, AddNewTasks)
-      val newXml = rule.apply(original)
+    val rule = new RuleTransformer(UpdateExistingTasks, AddNewTasks)
+    val newXml = rule.apply(original)
 
-      for (task <- newTasks) {
-        logger.info("New task: " + boards(task.idBoard) + " / " + lists(task.idList) + " / " + task.shortUrl + " " + task.name)
-      }
-
-      for (task <- tasks.values.filter(t => t.state == TaskState.Removed)) {
-        logger.info("Removed task: " + task.shortUrl + " " + task.name)
-      }
-
-      val writer = new OutputStreamWriter(out)
-      XML.write(writer, newXml, "UTF-8", false, null)
-      writer.flush()
-    } catch {
-      case x: Throwable => println(x)
+    for (task <- newTasks) {
+      logger.info("New task: " + boards(task.idBoard) + " / " + lists(task.idList) + " / " + task.shortUrl + " " + task.name)
     }
+
+    for (task <- tasks.values.filter(t => t.state == TaskState.Removed)) {
+      logger.info("Removed task: " + task.shortUrl + " " + task.name)
+    }
+
+    val writer = new OutputStreamWriter(out)
+    XML.write(writer, newXml, "UTF-8", false, null)
+    writer.flush()
   }
 
   def cleanUrl(s: String) = if (s.startsWith("URL:")) s.substring(4).trim() else s
