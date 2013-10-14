@@ -90,7 +90,7 @@ object TrelloMindmapSync {
       boardUrl =>
         fetch("board/" + boardUrl + "/") map {
           case j: JsObject =>
-              ((j \ "id").as[String], (j \ "name").as[String])
+            ((j \ "id").as[String], (j \ "name").as[String])
         }
     }
 
@@ -127,20 +127,23 @@ object TrelloMindmapSync {
     val flists = Future.sequence(fetchLists.toSeq)
     val fcards = Future.sequence(fetchBoardCards.toSeq)
 
-    fcards.onSuccess { case boardCards =>
-      val tasks = boardCards.flatten.map(t => (t.shortUrl,t)).toMap
+    fcards.onSuccess {
+      case boardCards =>
+        val tasks = boardCards.flatten.map(t => (t.shortUrl, t)).toMap
 
-      fboards.onSuccess { case boardResults =>
-        val boards = boardResults.toMap
+        fboards.onSuccess {
+          case boardResults =>
+            val boards = boardResults.toMap
 
-        flists.onSuccess { case listResults =>
+            flists.onSuccess {
+              case listResults =>
 
-          val lists = listResults.flatten.toMap
-          processMindMap(tasks, boards, lists)
-          println("Shutting down")
-          System.exit(0)
+                val lists = listResults.flatten.toMap
+                processMindMap(tasks, boards, lists)
+                println("Shutting down")
+                System.exit(0)
+            }
         }
-      }
     }
 
     fcards.onFailure {
@@ -190,7 +193,7 @@ object TrelloMindmapSync {
       None
   }
 
-  def convertContentXml(in: InputStream, out: OutputStream, boardTasks: Map[String, Task], boards: Map[String,String], lists: Map[String, String]) = {
+  def convertContentXml(in: InputStream, out: OutputStream, boardTasks: Map[String, Task], boards: Map[String, String], lists: Map[String, String]) = {
 
     println("Board tasks: " + boardTasks.size)
 
@@ -199,11 +202,17 @@ object TrelloMindmapSync {
     val mindmapTasks = (original \\ "topic").map(topicToTask(_, boardTasks)).flatten
     println("Mindmap tasks: " + mindmapTasks.size)
 
-    val tasks = boardTasks ++ mindmapTasks.map{m => (m.shortUrl, m)}
+    val tasks = boardTasks ++ mindmapTasks.map {
+      m => (m.shortUrl, m)
+    }
 
     val newTasks = tasks.values.filter(t => t.state == TaskState.New)
     println("Total tasks: " + tasks.size)
     println("New tasks: " + newTasks.size)
+
+    val groupedNewTasks = { newTasks groupBy(_.idList) groupBy (_._2.map(_.idBoard)) } map { a => (a._1.head -> a._2) }
+
+    println(groupedNewTasks)
 
     object AddNewTasks extends RewriteRule {
 
@@ -262,13 +271,51 @@ object TrelloMindmapSync {
         case e: Elem =>
           if (e.label == "xmap-content") {
 
-            val newTasksOutline = newTasks.map {
+            /*val newTasksOutline = newTasks.map {
               task =>
                 <topic id={"trello-" + task.id} timestamp={task.date.toInstant.getMillis.toString} xlink:href={task.shortUrl}>
                   <title>
                     {task.name}
                   </title>
                 </topic>
+            }*/
+
+            val newTasksOutline = groupedNewTasks.map { b =>
+              <topic>
+                <title>{b._1}</title> // board name
+                <children>
+                <topics type="attached">
+                  {
+                    b._2 map { l =>
+                      <topic> //
+                        <title>{lists(l._1)}</title> // list name
+                        <children>
+                        <topics type="attached">
+                          {
+                            l._2 map { task =>
+                              <topic id={"trello-" + task.id} timestamp={task.date.toInstant.getMillis.toString} xlink:href={task.shortUrl}>
+                                <title>
+                                  {task.name}
+                                </title>
+                              </topic>
+                            }
+                          }
+                        </topics>
+                        </children>
+                      </topic>
+                    }
+                  }
+                </topics>
+                </children>
+              </topic>
+              /*
+
+              task =>
+                <topic id={"trello-" + task.id} timestamp={task.date.toInstant.getMillis.toString} xlink:href={task.shortUrl}>
+                  <title>
+                    {task.name}
+                  </title>
+                </topic> */
             }
 
             val path = List(
@@ -298,7 +345,11 @@ object TrelloMindmapSync {
         }
 
         val labels: Seq[Node] = List(
-          boards.get(t.idBoard).toSeq.map { b => <label>trello-board-{b}</label> },
+          boards.get(t.idBoard).toSeq.map {
+            b => <label>trello-board-
+              {b}
+            </label>
+          },
           if (t.state == TaskState.Removed)
             <label>trello-removed</label>
           else
@@ -308,7 +359,7 @@ object TrelloMindmapSync {
         var added = false
         val r = nodes.map {
           n =>
-            if (n.isInstanceOf[Elem] && n.label == "labels")      {
+            if (n.isInstanceOf[Elem] && n.label == "labels") {
               added = true
               Some(n.asInstanceOf[Elem].copy(child = removeTrello(n.asInstanceOf[Elem].child) ++ labels))
             }
@@ -317,7 +368,9 @@ object TrelloMindmapSync {
         }.flatten
 
         if (!added)
-          r ++ <labels>{labels}</labels>
+          r ++ <labels>
+            {labels}
+          </labels>
         else
           r
       }
@@ -336,7 +389,7 @@ object TrelloMindmapSync {
         var added = false
         val r = nodes.map {
           n =>
-            if (n.isInstanceOf[Elem] && n.label == "marker-refs")      {
+            if (n.isInstanceOf[Elem] && n.label == "marker-refs") {
               added = true
               Some(n.asInstanceOf[Elem].copy(child = removeTrello(n.asInstanceOf[Elem].child) ++ markers))
             }
@@ -345,7 +398,9 @@ object TrelloMindmapSync {
         }.flatten
 
         if (!added)
-          r ++ <marker-refs>{markers}</marker-refs>
+          r ++ <marker-refs>
+            {markers}
+          </marker-refs>
         else
           r
       }
@@ -353,12 +408,15 @@ object TrelloMindmapSync {
       def modifyTitle(nodes: Seq[Node], task: Task): Seq[Node] = {
         val list = lists.get(task.idList)
         if (list.isDefined) {
-          nodes map { n =>
-            if (n.isInstanceOf[Elem] && n.label == "title") {
-              <title>{task.name + " / " + list.get}</title>
-            }
-            else
-              n
+          nodes map {
+            n =>
+              if (n.isInstanceOf[Elem] && n.label == "title") {
+                <title>
+                  {task.name + " / " + list.get}
+                </title>
+              }
+              else
+                n
           }
         }
         else
@@ -390,7 +448,7 @@ object TrelloMindmapSync {
     val newXml = rule.apply(original)
 
     for (task <- newTasks) {
-      logger.info("New task: " + task.shortUrl + " " + task.name)
+      logger.info("New task: " + boards(task.idBoard) + " / " + lists(task.idList) + " / " + task.shortUrl + " " + task.name)
     }
 
     for (task <- tasks.values.filter(t => t.state == TaskState.Removed)) {
