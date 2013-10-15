@@ -180,22 +180,30 @@ object TrelloMindmapSync {
     //System.exit(0) - doesn't work
   }
 
+  def textOf(g: Group[Node]) : String =
+    g.toList.map{
+      case Elem(_, _, _, _, children) => textOf(children)
+      case t: Text => t.text
+      case c: CDATA => c.text
+      case _ => ""
+    }.mkString
+
   def topicToTask(xmlTask: Elem, tasks: Map[String, Task]) = {
 
-    def textOf(g: Group[Node]) : String =
-      g.toList.map{
-        case Elem(_, _, _, _, children) => textOf(children)
-        case t: Text => t.text
-        case c: CDATA => c.text
-        case _ => ""
-      }.mkString
-
     val links = (xmlTask \ "Hyperlinks" \ "Hyperlink").flatMap(_.attr(QName("xlink","href")))
+    val text = textOf((xmlTask \ "Name"))
+    val urlLinks = !links.isEmpty && links.head.startsWith("https://trello.com/c/")
+    if (urlLinks || text.contains("https://trello.com/c/")) {
+      val url = if (urlLinks) links.head else {
+        val start = text.indexOf("https://trello.com/c/")
+        val end = text.indexWhere(c => c.isSpaceChar || List(']','[',',',')','(','.').contains(c))
+        if (end > 0)
+          text.substring(start, end)
+        else
+          text.substring(start)
+      }
 
-    if (!links.isEmpty && links.head.startsWith("https://trello.com/c/")) {
-      val url = links.head;
       val id = textOf((xmlTask \ "ID"))
-      val text = textOf((xmlTask \ "Name"))
       val date = DateTime.now
 
       val task = tasks.get(url)
@@ -214,7 +222,15 @@ object TrelloMindmapSync {
 
     val original = XML.fromInputStream(in)
 
-    val mindmapTasks = (original \\ "Task").map(t => topicToTask(t, boardTasks)).flatten
+    val projects = original \ "Projects"
+
+    val mindmapTasks = (projects \ "Project" \ "Task").map(t => topicToTask(t, boardTasks)).flatten
+
+    var maxTaskId = (projects \ "Project" \ "Task").map(t => textOf(t \ "ID").toLong).max
+
+    val project = (projects \ "Project").head
+    var maxProjectOutlineId = 1 + (project \ "Task").map(t => textOf(t \ "OutlineNumber").split('.').head.toLong).max
+
     println("Mindmap tasks: " + mindmapTasks.size)
 
     val tasks = boardTasks ++ mindmapTasks.map {
@@ -225,11 +241,90 @@ object TrelloMindmapSync {
     println("Total tasks: " + tasks.size)
     println("New tasks: " + newTasks.size)
 
-    val groupedNewTasks = {
-      newTasks groupBy (_.idList) groupBy (_._2.map(_.idBoard).head)
-    } // map { a => (a._1 -> a._2) }
+    def genTaskName(t: Task) = t.name + " / " + lists(t.idList) + " " + t.shortUrl
 
-    val newXml = original
+    def newTaskXml(outline: String, name: String, url: Option[String] = None) : Elem ={
+      maxTaskId += 1
+      Elem("Task", Attributes(),Group(
+        Elem("ID", Attributes(), Group(Text(maxTaskId.toString))),
+        Elem("OutlineNumber", Attributes(), Group(Text(outline))),
+        Elem("Name", Attributes(), Group(Text(name))),
+        Elem("Note", Attributes()),
+        Elem("BaseStartDate", Attributes()),
+        Elem("BaseFinishDate", Attributes()),
+        Elem("BaseDuration", Attributes()),
+        Elem("BaseDurationTimeUnit", Attributes()),
+        Elem("ActualStartDate", Attributes()),
+        Elem("ActualFinishDate", Attributes()),
+        Elem("ActualDuration", Attributes()),
+        Elem("ActualCost", Attributes()),
+        Elem("Cost1", Attributes()),
+        Elem("RecalcBase1", Attributes()),
+        Elem("RecalcBase2", Attributes()),
+        Elem("IsMilestone", Attributes()),
+        Elem("Complete", Attributes()),
+        Elem("IsHaveDeadline", Attributes()),
+        Elem("SchedulingType", Attributes()),
+        Elem("IsEffortDriven", Attributes()),
+        Elem("Priority", Attributes()),
+        Elem("MarkedByUser", Attributes()),
+        Elem("StyleProject", Attributes()),
+        Elem("ResourceAssignments", Attributes()),
+        Elem("Callouts", Attributes()),
+        Elem("rtfName", Attributes()),
+        Elem("rtfNote", Attributes()),
+        Elem("Objective", Attributes()),
+        Elem("BranchPos", Attributes()),
+        Elem("ValidatedByProject", Attributes()),
+        Elem("Hyperlinks", Attributes(), Group.fromSeq(url.map({ s => Elem("Hyperlink", Attributes("xlink:href" -> s, "xlink:type" -> "simple")) }).toSeq) )
+      ))
+    }
+
+    val newProject: Elem =
+      if (!newTasks.isEmpty) {
+        val groupedNewTasks = {
+          newTasks groupBy (_.idList) groupBy (_._2.map(_.idBoard).head)
+        }
+
+        /*project.copy( children = project.children ++ Group.fromSeq(
+          (groupedNewTasks.map { a =>
+            List(newTaskXml(maxProjectOutlineId.toString, boards(a._1))) +
+            boardTasks.map({ t => maxProjectOutlineId+=1; newTaskXml(maxProjectOutlineId.toString, a._2).toGroup }).flatten
+          }).flatten)*/
+
+        project.copy( children = project.children ++
+
+          Group.fromSeq(groupedNewTasks.map{ b =>
+            maxProjectOutlineId+=1;
+            val lst = List[Elem](newTaskXml(maxProjectOutlineId.toString, boards(b._1)))
+            var lstIndent = 0;
+            (lst ++
+              (b._2.map { l =>
+                lstIndent += 1;
+                val lstIndentStr = maxProjectOutlineId.toString + "." + lstIndent.toString
+
+                var tskIndent = 0;
+                val lst2 = List[Elem](newTaskXml(maxProjectOutlineId.toString + "." + lstIndent.toString, lists(l._1)))
+
+                (lst2 ++
+                  (l._2.map { t =>
+                    tskIndent += 1;
+                    newTaskXml(lstIndentStr + "." + tskIndent.toString, t.name, Some(t.shortUrl))
+                  })
+                )
+              }).flatten
+            )
+          }.flatten.toSeq)
+          /*++
+          newTasks.map{
+            t => maxProjectOutlineId+=1;
+            newTaskXml(maxProjectOutlineId.toString, genTaskName(t), Some(t.shortUrl))
+          }*/
+        )
+      }
+      else
+        project.copy()
+
 
     for (task <- newTasks) {
       logger.info("New task: " + boards(task.idBoard) + " / " + lists(task.idList) + " / " + task.shortUrl + " " + task.name)
@@ -245,7 +340,10 @@ object TrelloMindmapSync {
       }
     }
 
-    original.writeTo(writer)
+    val newProjectUpdated = (projects \ "Project").updated(0, newProject)
+    val newXml = newProjectUpdated.unselect.unselect
+
+    newXml.head.asInstanceOf[Elem].writeTo(writer)
     //XML.write(writer, newXml, "UTF-8", false, null)
     writer.flush()
   }
