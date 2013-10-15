@@ -145,7 +145,7 @@ object TrelloMindmapSync {
                   processMindMap(tasks, boards, lists)
                 }
                 catch {
-                  case x => println(x)
+                  case x => println(x.toString); x.printStackTrace()
                 }
                 println("Shutting down")
                 System.exit(0)
@@ -188,7 +188,7 @@ object TrelloMindmapSync {
       case _ => ""
     }.mkString
 
-  def topicToTask(xmlTask: Elem, tasks: Map[String, Task]) = {
+  def xmlTaskToBoardTask(xmlTask: Elem, tasks: Map[String, Task]) = {
 
     val links = (xmlTask \ "Hyperlinks" \ "Hyperlink").flatMap(_.attr(QName("xlink","href")))
     val text = textOf((xmlTask \ "Name"))
@@ -196,7 +196,7 @@ object TrelloMindmapSync {
     if (urlLinks || text.contains("https://trello.com/c/")) {
       val url = if (urlLinks) links.head else {
         val start = text.indexOf("https://trello.com/c/")
-        val end = text.indexWhere(c => c.isSpaceChar || List(']','[',',',')','(','.').contains(c))
+        val end = text.indexWhere(_.isSpaceChar, start)
         if (end > 0)
           text.substring(start, end)
         else
@@ -216,6 +216,7 @@ object TrelloMindmapSync {
       None
   }
 
+
   def convertContentXml(in: InputStream, out: OutputStream, boardTasks: Map[String, Task], boards: Map[String, String], lists: Map[String, String]) = {
 
     println("Board tasks: " + boardTasks.size)
@@ -224,7 +225,7 @@ object TrelloMindmapSync {
 
     val projects = original \ "Projects"
 
-    val mindmapTasks = (projects \ "Project" \ "Task").map(t => topicToTask(t, boardTasks)).flatten
+    val mindmapTasks = (projects \ "Project" \ "Task").map(t => xmlTaskToBoardTask(t, boardTasks)).flatten
 
     var maxTaskId = (projects \ "Project" \ "Task").map(t => textOf(t \ "ID").toLong).max
 
@@ -243,11 +244,33 @@ object TrelloMindmapSync {
 
     def genTaskName(t: Task) = t.name + " / " + lists(t.idList) + " " + t.shortUrl
 
-    def newTaskXml(outline: String, name: String, url: Option[String] = None) : Elem ={
+    def updateProjectTask(elem: Elem): Elem = {
+      val t = xmlTaskToBoardTask(elem, tasks)
+      if (t.isDefined) {
+        val title = elem \ "Name"
+        val newTitle : Elem = <Name>{genTaskName(t.get)}</Name>.convert
+
+        val hyperlinks = title.updated(0, newTitle).unselect \ "Hyperlinks"
+        val newHyperlinks = Elem("Hyperlinks", Attributes(), Group.fromSeq(t.map({ s => Elem("Hyperlink", Attributes("xlink:href" -> s.shortUrl, "xlink:type" -> "simple")) }).toSeq) )
+
+        hyperlinks.updated(0, newHyperlinks).unselect.head.asInstanceOf[Elem]
+      }
+      else
+        elem
+    }
+
+    def updateProjectNodes(elements: Group[Node]) : Group[Node] = {
+      elements.map(a => { a match {
+        case e @ Elem(_, "Task", _, _, _) => updateProjectTask(e)
+        case _ => a
+      }})
+    }
+
+    def newTaskXml(outline: Seq[Long], name: String, url: Option[String] = None) : Elem ={
       maxTaskId += 1
       Elem("Task", Attributes(),Group(
         Elem("ID", Attributes(), Group(Text(maxTaskId.toString))),
-        Elem("OutlineNumber", Attributes(), Group(Text(outline))),
+        Elem("OutlineNumber", Attributes(), Group(Text(outline.mkString(".")))),
         Elem("Name", Attributes(), Group(Text(name))),
         Elem("Note", Attributes()),
         Elem("BaseStartDate", Attributes()),
@@ -286,47 +309,36 @@ object TrelloMindmapSync {
           newTasks groupBy (_.idList) groupBy (_._2.map(_.idBoard).head)
         }
 
-        /*project.copy( children = project.children ++ Group.fromSeq(
-          (groupedNewTasks.map { a =>
-            List(newTaskXml(maxProjectOutlineId.toString, boards(a._1))) +
-            boardTasks.map({ t => maxProjectOutlineId+=1; newTaskXml(maxProjectOutlineId.toString, a._2).toGroup }).flatten
-          }).flatten)*/
+        val outline = List(maxProjectOutlineId)
 
-        project.copy( children = project.children ++
-
-          Seq(newTaskXml("1", "GGGG")) ++
-
-          groupedNewTasks.map{ b =>
-            maxProjectOutlineId+=1;
-            val lst = List[Elem](newTaskXml(maxProjectOutlineId.toString, boards(b._1)))
-            var lstIndent = 0;
-            (lst ++
-              (b._2.map { l =>
-                lstIndent += 1;
-                val lstIndentStr = maxProjectOutlineId.toString + "." + lstIndent.toString
-
-                var tskIndent = 0;
-                val lst2 = List[Elem](newTaskXml(maxProjectOutlineId.toString + "." + lstIndent.toString, lists(l._1)))
-
-                (lst2 ++
-                  (l._2.map { t =>
-                    tskIndent += 1;
-                    newTaskXml(lstIndentStr + "." + tskIndent.toString, t.name, Some(t.shortUrl))
-                  })
-                )
-              }).flatten
-            )
-          }.flatten
-          /*++
-          newTasks.map{
-            t => maxProjectOutlineId+=1;
-            newTaskXml(maxProjectOutlineId.toString, genTaskName(t), Some(t.shortUrl))
-          }*/
+        project.copy( children = updateProjectNodes(project.children) ++
+          Seq(newTaskXml(outline, "Inbox - " + DateTime.now.toDateTimeISO)) ++ {
+            var boardLevel: Long = 0;
+  
+            groupedNewTasks.map{ b =>
+              boardLevel+=1;
+              val lst = List[Elem](newTaskXml(outline ++ List(boardLevel), boards(b._1)))
+              var listLevel: Long = 0;
+              (lst ++
+                (b._2.map { l =>
+                  listLevel += 1;  
+                  var taskLevel: Long = 0;
+                  val lst2 = List[Elem](newTaskXml(outline ++ List(boardLevel, listLevel), lists(l._1)))
+  
+                  (lst2 ++
+                    (l._2.map { t =>
+                      taskLevel += 1;
+                      newTaskXml(outline ++ List(boardLevel, listLevel, taskLevel), genTaskName(t), Some(t.shortUrl))
+                    })
+                  )
+                }).flatten
+              )
+            }.flatten
+          }
         )
       }
       else
-        project.copy()
-
+        project.copy(children = updateProjectNodes(project.children))
 
     for (task <- newTasks) {
       logger.info("New task: " + boards(task.idBoard) + " / " + lists(task.idList) + " / " + task.shortUrl + " " + task.name)
