@@ -12,5 +12,9 @@ libraryDependencies += "commons-io" % "commons-io" % "2.4"
 
 libraryDependencies += "com.jsuereth" %% "scala-arm" % "1.3"
 
+libraryDependencies += "org.scalesxml" %% "scales-xml" % "0.4.5"
+
+libraryDependencies += "no.arktekk" %% "anti-xml" % "0.5.1"
+
 libraryDependencies += "org.scalatest" % "scalatest_2.10" % "2.0.RC1" % "test"
 
