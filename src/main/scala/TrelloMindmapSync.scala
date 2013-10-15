@@ -294,7 +294,9 @@ object TrelloMindmapSync {
 
         project.copy( children = project.children ++
 
-          Group.fromSeq(groupedNewTasks.map{ b =>
+          Seq(newTaskXml("1", "GGGG")) ++
+
+          groupedNewTasks.map{ b =>
             maxProjectOutlineId+=1;
             val lst = List[Elem](newTaskXml(maxProjectOutlineId.toString, boards(b._1)))
             var lstIndent = 0;
@@ -314,7 +316,7 @@ object TrelloMindmapSync {
                 )
               }).flatten
             )
-          }.flatten.toSeq)
+          }.flatten
           /*++
           newTasks.map{
             t => maxProjectOutlineId+=1;
