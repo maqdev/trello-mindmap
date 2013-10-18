@@ -242,16 +242,28 @@ object TrelloMindmapSync {
     println("Total tasks: " + tasks.size)
     println("New tasks: " + newTasks.size)
 
-    def genTaskName(t: Task) = t.name + " / " + lists(t.idList) + " " + t.shortUrl
+    for (task <- newTasks) {
+      logger.info("New task: " + boards(task.idBoard) + " / " + lists(task.idList) + " / " + task.shortUrl + " " + task.name)
+    }
+
+    for (task <- tasks.values.filter(t => t.state == TaskState.Removed)) {
+      logger.info("Removed task: " + task.shortUrl + " " + task.name)
+    }
+
+    def genTaskName(t: Task) = t.state match  {
+      case TaskState.Removed => if (t.name.startsWith("[x]")) t.name else "[x] " + t.name
+      case _ => t.name + " {" + lists(t.idList) + "} " + t.shortUrl
+    }
 
     def updateProjectTask(elem: Elem): Elem = {
       val t = xmlTaskToBoardTask(elem, tasks)
       if (t.isDefined) {
+        val task = tasks(t.get.shortUrl)
         val title = elem \ "Name"
-        val newTitle : Elem = <Name>{genTaskName(t.get)}</Name>.convert
+        val newTitle : Elem = <Name>{genTaskName(task)}</Name>.convert
 
         val hyperlinks = title.updated(0, newTitle).unselect \ "Hyperlinks"
-        val newHyperlinks = Elem("Hyperlinks", Attributes(), Group.fromSeq(t.map({ s => Elem("Hyperlink", Attributes("xlink:href" -> s.shortUrl, "xlink:type" -> "simple")) }).toSeq) )
+        val newHyperlinks = Elem("Hyperlinks", Attributes(), Group(Elem("Hyperlink", Attributes("xlink:href" -> task.shortUrl, "xlink:type" -> "simple"))))
 
         hyperlinks.updated(0, newHyperlinks).unselect.head.asInstanceOf[Elem]
       }
@@ -339,14 +351,6 @@ object TrelloMindmapSync {
       }
       else
         project.copy(children = updateProjectNodes(project.children))
-
-    for (task <- newTasks) {
-      logger.info("New task: " + boards(task.idBoard) + " / " + lists(task.idList) + " / " + task.shortUrl + " " + task.name)
-    }
-
-    for (task <- tasks.values.filter(t => t.state == TaskState.Removed)) {
-      logger.info("Removed task: " + task.shortUrl + " " + task.name)
-    }
 
     val writer = new OutputStreamWriter(out) {
       override def close = {
